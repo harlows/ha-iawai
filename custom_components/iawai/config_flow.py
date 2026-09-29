@@ -10,8 +10,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.update_coordinator import UpdateFailed
 
+from .api import (
+    IAWAIAuthenticationError,
+    IAWAIClient,
+    IAWAIError,
+)
 from .const import (
     CONF_ACCOUNT_ID,
     CONF_METER_GROUP_ID,
@@ -22,7 +26,6 @@ from .const import (
     DOMAIN,
     NAME,
 )
-from .coordinator import IAWAIClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,10 +43,10 @@ class IAWAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 await self._async_validate_input(user_input)
 
-            except ConfigEntryAuthFailed:
+            except IAWAIAuthenticationError:
                 errors["base"] = "invalid_auth"
 
-            except UpdateFailed:
+            except IAWAIError:
                 _LOGGER.exception("Unable to connect to IAWAI")
                 errors["base"] = "cannot_connect"
 
@@ -91,11 +94,18 @@ class IAWAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def _async_validate_input(
-        self, user_input: dict
-    ) -> None:
+    async def _async_validate_input(self, user_input: dict) -> None:
         """Validate credentials by logging in to IAWAI."""
         session = async_get_clientsession(self.hass)
-        client = IAWAIClient(session, user_input)
 
-        await client.async_login()
+        client = IAWAIClient(
+            session=session,
+            username=user_input[CONF_USERNAME],
+            password=user_input[CONF_PASSWORD],
+            account_id=user_input[CONF_ACCOUNT_ID],
+            site_id=user_input[CONF_SITE_ID],
+            meter_group_id=user_input[CONF_METER_GROUP_ID],
+            meter_id=user_input[CONF_METER_ID],
+        )
+
+        await client.authenticate()
