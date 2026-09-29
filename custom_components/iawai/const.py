@@ -25,7 +25,7 @@ TIME_ZONE = "Pacific/Auckland"
 HISTORY_START = date(2026, 3, 26)
 
 # Home Assistant update interval
-UPDATE_INTERVAL_HOURS = 24
+UPDATE_INTERVAL_HOURS = 1
 
 # Config-entry keys
 CONF_USERNAME = "username"
