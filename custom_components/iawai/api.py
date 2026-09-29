@@ -56,6 +56,7 @@ class IAWAIClient:
 
         self._token: str | None = None
 
+
     async def authenticate(self) -> None:
         """Obtain a fresh bearer token."""
         try:
@@ -67,6 +68,11 @@ class IAWAIClient:
                 },
                 timeout=REQUEST_TIMEOUT,
             ) as response:
+                if response.status in (401, 403):
+                    raise IAWAIAuthenticationError(
+                        "IAWAI rejected the supplied credentials."
+                    )
+
                 response.raise_for_status()
                 result = await response.json()
 
