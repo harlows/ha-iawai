@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 import logging
 
 import aiohttp
@@ -13,6 +14,7 @@ from .const import (
     API_INTERVAL_SECONDS,
     LOGIN_PATH,
     REQUEST_TIMEOUT,
+    TIME_ZONE,
     WATER_DATA_PATH,
 )
 
@@ -173,15 +175,21 @@ class IAWAIClient:
 
         return readings
 
+
     async def fetch_yesterday(self) -> list[tuple[int, float]]:
-        """Fetch yesterday's completed hourly readings."""
-        now = datetime.now(timezone.utc)
+        """Fetch yesterday's hourly readings using local day boundaries."""
+        local_tz = ZoneInfo(TIME_ZONE)
+        today = datetime.now(local_tz).date()
+        yesterday = today - timedelta(days=1)
 
-        current_hour = (
-            int(now.timestamp()) // API_INTERVAL_SECONDS
-        ) * API_INTERVAL_SECONDS
+        start_local = datetime.combine(
+            yesterday, time.min, tzinfo=local_tz
+        )
+        end_local = datetime.combine(
+            today, time.min, tzinfo=local_tz
+        )
 
-        end = current_hour
-        start = end - 86400
+        start = int(start_local.timestamp())
+        end = int(end_local.timestamp())
 
         return await self.fetch_readings(start, end)
