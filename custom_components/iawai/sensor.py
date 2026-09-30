@@ -25,7 +25,7 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
         name="Yesterday's consumption",
         device_class=SensorDeviceClass.WATER,
         native_unit_of_measurement=UnitOfVolume.LITERS,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL,
         icon="mdi:water",
     ),
     SensorEntityDescription(
@@ -33,7 +33,7 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
         name="Last hour's consumption",
         device_class=SensorDeviceClass.WATER,
         native_unit_of_measurement=UnitOfVolume.LITERS,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL,
         icon="mdi:water-outline",
     ),
 )
