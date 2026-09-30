@@ -200,21 +200,6 @@ class IAWAIClient:
 
         return self._parse_readings(result)
 
-    async def fetch_yesterday(self) -> list[tuple[int, float]]:
-        """Fetch yesterday's hourly readings using local day boundaries."""
-        local_tz = ZoneInfo(TIME_ZONE)
-        today = datetime.now(local_tz).date()
-        yesterday = today - timedelta(days=1)
-
-        start = int(
-            datetime.combine(yesterday, time.min, tzinfo=local_tz).timestamp()
-        )
-        end = int(
-            datetime.combine(today, time.min, tzinfo=local_tz).timestamp()
-        )
-
-        return await self.fetch_readings(start, end)
-
     async def fetch_cumulative_total(
         self,
     ) -> tuple[list[tuple[int, float]], float]:

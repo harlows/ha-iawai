@@ -3,22 +3,25 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect to IAWAI Water",
-        "description": "Enter your IAWAI login details and the identifiers from your water meter portal URL.",
+        "title": "IAWAI Water",
+        "description": "Enter your IAWAI/Oplex account credentials and meter identifiers. These can be found in your IAWAI account settings.",
         "data": {
           "username": "Username",
           "password": "Password",
           "account_id": "Account ID",
           "site_id": "Site ID",
-          "meter_group_id": "Meter group ID",
+          "meter_group_id": "Meter Group ID",
           "meter_id": "Meter ID"
         }
       }
     },
     "error": {
-      "invalid_auth": "Invalid username or password.",
-      "cannot_connect": "Unable to connect to IAWAI. Check your connection and try again.",
-      "unknown": "An unexpected error occurred. Check the Home Assistant logs."
+      "invalid_auth": "Invalid credentials. Check your username and password.",
+      "cannot_connect": "Cannot connect to IAWAI. Check your network connection.",
+      "unknown": "Unexpected error during setup. Check the Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This meter is already configured."
     }
   }
 }
