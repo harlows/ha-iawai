@@ -2,10 +2,10 @@
 {
   "domain": "iawai",
   "name": "IAWAI Water",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "documentation": "https://github.com/harlows/ha-iawai",
   "issue_tracker": "https://github.com/harlows/ha-iawai/issues",
-  "codeowners": [],
+  "codeowners": [@harlows],
   "config_flow": true,
   "iot_class": "cloud_polling",
   "requirements": []
