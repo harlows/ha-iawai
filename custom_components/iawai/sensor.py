@@ -28,14 +28,6 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         icon="mdi:water",
     ),
-    SensorEntityDescription(
-        key="last_hour",
-        name="Last hour's consumption",
-        device_class=SensorDeviceClass.WATER,
-        native_unit_of_measurement=UnitOfVolume.LITERS,
-        state_class=SensorStateClass.TOTAL,
-        icon="mdi:water-outline",
-    ),
 )
 
 
@@ -86,14 +78,4 @@ class IAWAIWaterSensor(
         """Return the sensor value."""
         if self.coordinator.data is None:
             return None
-
-        if self.entity_description.key == "yesterday":
-            return self.coordinator.data["total_litres"]
-
-        readings = self.coordinator.data["readings"]
-
-        if not readings:
-            return None
-
-        # Each reading is a (Unix timestamp, litres) tuple.
-        return max(readings, key=lambda reading: reading[0])[1]
+        return self.coordinator.data["total_litres"]
