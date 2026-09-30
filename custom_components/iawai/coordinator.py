@@ -14,6 +14,7 @@ from homeassistant.components.recorder.models import (
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
+    statistics_during_period,
 )
 from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
@@ -122,6 +123,48 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         )
         return last_sum, last_date
 
+    async def _async_get_yesterday_litres(
+        self,
+        local_tz: ZoneInfo,
+        yesterday: date,
+        today: date,
+    ) -> float:
+        """Read yesterday's total consumption from the recorder DB.
+
+        Sums the hourly ``state`` values (litres per hour) for
+        yesterday from the statistics table. This is independent of
+        the incremental fetch — it returns the correct value even on
+        days when no new API data is available.
+        """
+        yesterday_start_dt = datetime.combine(
+            yesterday, time.min, tzinfo=local_tz
+        )
+        today_start_dt = datetime.combine(
+            today, time.min, tzinfo=local_tz
+        )
+
+        recorder = get_instance(self.hass)
+        result = await recorder.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            yesterday_start_dt,
+            today_start_dt,
+            {STAT_ID},
+            "hour",
+            None,
+            {"state"},
+        )
+
+        yesterday_litres = sum(
+            entry.get("state") or 0.0
+            for entry in result.get(STAT_ID, [])
+        )
+
+        _LOGGER.debug(
+            "Yesterday (%s) from DB: %.1f L", yesterday, yesterday_litres
+        )
+        return yesterday_litres
+
     def _publish_water_statistics(
         self,
         readings: list[tuple[int, float]],
@@ -224,22 +267,18 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         # Cumulative total for the sensor = DB total + new readings.
         cumulative_litres = last_sum + new_total
 
-        # Isolate yesterday's readings for the glanceable daily sensor.
+        # ------------------------------------------------------------------
+        # Yesterday's total is read from the recorder DB, not from the
+        # incremental fetch. This ensures the sensor always shows the
+        # correct value even on days when no new API data is available
+        # (i.e. when new_readings is empty).
+        # ------------------------------------------------------------------
         local_tz = ZoneInfo(TIME_ZONE)
         today = datetime.now(local_tz).date()
         yesterday = today - timedelta(days=1)
 
-        yesterday_start = int(
-            datetime.combine(yesterday, time.min, tzinfo=local_tz).timestamp()
-        )
-        today_start = int(
-            datetime.combine(today, time.min, tzinfo=local_tz).timestamp()
-        )
-
-        yesterday_litres = sum(
-            litres
-            for ts, litres in new_readings
-            if yesterday_start <= ts < today_start
+        yesterday_litres = await self._async_get_yesterday_litres(
+            local_tz, yesterday, today
         )
 
         _LOGGER.debug(
