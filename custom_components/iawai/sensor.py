@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -26,8 +27,8 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfVolume.LITERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
         icon="mdi:water",
-        # Powers the HA Water dashboard. Continuously rising
-        # lifetime total — HA calculates daily/weekly/monthly
+        # Continuously rising lifetime total
+        # HA calculates daily/weekly/monthly
         # deltas from it automatically.
     ),
     SensorEntityDescription(
@@ -38,7 +39,6 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         icon="mdi:water-outline",
         # Glanceable daily total. Resets each day.
-        # Not suitable for the Water dashboard — use cumulative.
     ),
 )
 
@@ -81,6 +81,7 @@ class IAWAIWaterSensor(
             name=NAME,
             manufacturer="Oplex",
             model="IAWAI water meter",
+	    entry_type=DeviceEntryType.SERVICE,
         )
 
     @property
