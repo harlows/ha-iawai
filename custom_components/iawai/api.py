@@ -12,6 +12,8 @@ from .const import (
     API_AGGREGATION,
     API_BASE_URL,
     API_INTERVAL_SECONDS,
+    CHUNK_DAYS,
+    HISTORY_START,
     LOGIN_PATH,
     REQUEST_TIMEOUT,
     TIME_ZONE,
@@ -212,3 +214,61 @@ class IAWAIClient:
         )
 
         return await self.fetch_readings(start, end)
+
+    async def fetch_cumulative_total(
+        self,
+    ) -> tuple[list[tuple[int, float]], float]:
+        """Fetch all readings from HISTORY_START to end of yesterday.
+
+        Requests are made in CHUNK_DAYS-sized windows to avoid
+        overwhelming the API with a single enormous request.
+
+        Returns a tuple of:
+            - all_readings : list of (unix_timestamp, litres) tuples
+            - cumulative   : sum of all litre values
+        """
+        local_tz = ZoneInfo(TIME_ZONE)
+        today = datetime.now(local_tz).date()
+        yesterday = today - timedelta(days=1)
+
+        all_readings: list[tuple[int, float]] = []
+        chunk_start = HISTORY_START
+
+        while chunk_start <= yesterday:
+            chunk_end = min(
+                chunk_start + timedelta(days=CHUNK_DAYS),
+                today,
+            )
+
+            start_ts = int(
+                datetime.combine(
+                    chunk_start, time.min, tzinfo=local_tz
+                ).timestamp()
+            )
+            end_ts = int(
+                datetime.combine(
+                    chunk_end, time.min, tzinfo=local_tz
+                ).timestamp()
+            )
+
+            _LOGGER.debug(
+                "Fetching chunk %s → %s", chunk_start, chunk_end
+            )
+
+            chunk = await self.fetch_readings(start_ts, end_ts)
+            all_readings.extend(chunk)
+            chunk_start = chunk_end
+
+        cumulative = sum(litres for _, litres in all_readings)
+
+        _LOGGER.debug(
+            "Cumulative total: %.1f L across %d hourly readings "
+            "(%s → %s)",
+            cumulative,
+            len(all_readings),
+            HISTORY_START,
+            yesterday,
+        )
+
+        return all_readings, cumulative
+
