@@ -83,9 +83,10 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         last_sum  — cumulative total stored in the DB; used as the
                     starting point for new injected entries so the
                     running total is never double-counted.
-        last_date — date of the most recent DB entry; passed to
-                    fetch_cumulative_total() as the start of the next
-                    fetch window so only new readings are requested.
+        last_date — date of the most recent DB entry; one day is added
+                    before passing to fetch_cumulative_total() so that
+                    the last known day is not re-fetched and its litres
+                    double-counted on top of last_sum.
 
         Returns (0.0, None) on a fresh install (no existing statistics).
         """
@@ -190,12 +191,20 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
 
         # Seed from the DB — get the last known sum and date.
         # On first run both are zero/None → full history is fetched.
-        # On subsequent runs → only readings since last_date are fetched.
+        # On subsequent runs → only readings AFTER last_date are fetched.
         last_sum, last_date = await self._async_get_last_stat()
+
+        # Advance by one day so fetch starts AFTER the last DB entry.
+        # Without this, the last known day is re-fetched and its litres
+        # are added on top of a last_sum that already contains them,
+        # causing yesterday's consumption to appear doubled.
+        since = (
+            last_date + timedelta(days=1) if last_date is not None else None
+        )
 
         try:
             new_readings, new_total = (
-                await self.client.fetch_cumulative_total(since=last_date)
+                await self.client.fetch_cumulative_total(since=since)
             )
 
         except IAWAIAuthenticationError as err:
@@ -235,11 +244,12 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
 
         _LOGGER.debug(
             "Cumulative total: %.1f L | Yesterday (%s): %.1f L | "
-            "New readings: %d",
+            "New readings: %d | Fetched since: %s",
             cumulative_litres,
             yesterday,
             yesterday_litres,
             len(new_readings),
+            since,
         )
 
         return {
