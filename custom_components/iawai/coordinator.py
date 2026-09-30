@@ -1,8 +1,9 @@
 
 """Data coordinator for the IAWAI Water integration."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta, timezone
 import logging
+from zoneinfo import ZoneInfo
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -20,9 +21,9 @@ from .const import (
     CONF_PASSWORD,
     CONF_SITE_ID,
     CONF_USERNAME,
-    DOMAIN,
     NAME,
-    UPDATE_INTERVAL_HOURS,
+    TIME_ZONE,
+    UPDATE_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,39 +54,58 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=NAME,
-            update_interval=timedelta(
-                hours=UPDATE_INTERVAL_HOURS
-            ),
+            update_interval=UPDATE_INTERVAL,
         )
 
     async def _async_update_data(self) -> dict:
-        """Fetch yesterday's completed hourly readings."""
+        """Fetch all readings and compute yesterday and cumulative totals."""
         try:
-	    readings = await self.client.fetch_yesterday()
+            all_readings, cumulative_litres = (
+                await self.client.fetch_cumulative_total()
+            )
 
-	except IAWAIAuthenticationError as err:
-	    raise ConfigEntryAuthFailed(
-		f"IAWAI credentials are no longer valid: {err}"
-	    ) from err
+        except IAWAIAuthenticationError as err:
+            raise ConfigEntryAuthFailed(
+                f"IAWAI credentials are no longer valid: {err}"
+            ) from err
 
-	except IAWAIError as err:
+        except IAWAIError as err:
             raise UpdateFailed(
                 f"Error communicating with IAWAI: {err}"
             ) from err
 
-        total_litres = sum(
-            litres for _, litres in readings
+        # Isolate yesterday's readings for the daily sensor.
+        local_tz = ZoneInfo(TIME_ZONE)
+        today = datetime.now(local_tz).date()
+        yesterday = today - timedelta(days=1)
+
+        yesterday_start = int(
+            datetime.combine(yesterday, time.min, tzinfo=local_tz).timestamp()
+        )
+        today_start = int(
+            datetime.combine(today, time.min, tzinfo=local_tz).timestamp()
         )
 
+        yesterday_readings = [
+            (ts, litres)
+            for ts, litres in all_readings
+            if yesterday_start <= ts < today_start
+        ]
+        yesterday_litres = sum(litres for _, litres in yesterday_readings)
+
         _LOGGER.debug(
-            "Retrieved %s hourly readings; yesterday's "
-            "consumption was %.1f litres",
-            len(readings),
-            total_litres,
+            "Cumulative total: %.1f L | Yesterday (%s): %.1f L "
+            "from %d hourly readings",
+            cumulative_litres,
+            yesterday,
+            yesterday_litres,
+            len(yesterday_readings),
         )
 
         return {
-            "readings": readings,
-            "total_litres": total_litres,
-            "last_updated": datetime.now().isoformat(),
+            "all_readings": all_readings,
+            "yesterday_readings": yesterday_readings,
+            "yesterday_litres": yesterday_litres,
+            "cumulative_litres": cumulative_litres,
+            "last_updated": datetime.now(tz=timezone.utc).isoformat(),
         }
