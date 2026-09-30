@@ -1,4 +1,3 @@
-
 """Set up the IAWAI Water integration."""
 
 from homeassistant.config_entries import ConfigEntry
@@ -20,18 +19,12 @@ async def async_setup_entry(
         dict(entry.data),
     )
 
-    # Fetch the initial data before creating entities.
     await coordinator.async_config_entry_first_refresh()
 
-    # Store the coordinator for the sensor platform to access.
-    hass.data.setdefault("iawai", {})
-    hass.data["iawai"][entry.entry_id] = coordinator
+    # Store coordinator on the entry — modern HA pattern (2024.x+).
+    entry.runtime_data = coordinator
 
-    # Set up the sensor platform.
-    await hass.config_entries.async_forward_entry_setups(
-        entry,
-        PLATFORMS,
-    )
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
@@ -41,15 +34,4 @@ async def async_unload_entry(
     entry: ConfigEntry,
 ) -> bool:
     """Unload IAWAI Water."""
-    if not await hass.config_entries.async_unload_platforms(
-        entry,
-        PLATFORMS,
-    ):
-        return False
-
-    hass.data["iawai"].pop(entry.entry_id)
-
-    if not hass.data["iawai"]:
-        hass.data.pop("iawai")
-
-    return True
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

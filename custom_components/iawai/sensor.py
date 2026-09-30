@@ -45,9 +45,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up IAWAI water sensors."""
-    coordinator: IAWAIDataUpdateCoordinator = (
-        hass.data[DOMAIN][entry.entry_id]
-    )
+    coordinator: IAWAIDataUpdateCoordinator = entry.runtime_data
 
     async_add_entities(
         IAWAIWaterSensor(coordinator, description, entry)
