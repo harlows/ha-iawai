@@ -13,7 +13,6 @@ from homeassistant.components.recorder.models import (
 )
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
-    get_last_statistics,
 )
 from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
@@ -77,39 +76,9 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
     # Statistics injection
     # ------------------------------------------------------------------
 
-    async def _async_get_last_stat_sum(self) -> float:
-        """Return the last cumulative sum stored in the HA statistics DB.
-
-        Returns 0.0 on a fresh install (no existing statistics).
-        The sum is used as the starting point for new injected entries
-        so the cumulative total is never double-counted.
-        """
-        recorder = get_instance(self.hass)
-        last = await recorder.async_add_executor_job(
-            get_last_statistics,
-            self.hass,
-            1,
-            STAT_ID,
-            False,
-            {"sum"},
-        )
-
-        if not last or STAT_ID not in last or not last[STAT_ID]:
-            _LOGGER.debug(
-                "No existing statistics for %s — starting from 0", STAT_ID
-            )
-            return 0.0
-
-        last_sum = last[STAT_ID][0].get("sum") or 0.0
-        _LOGGER.debug(
-            "Seeded cumulative sum from DB: %.1f L", last_sum
-        )
-        return last_sum
-
     def _publish_water_statistics(
         self,
         readings: list[tuple[int, float]],
-        last_sum: float,
     ) -> None:
         """Inject hourly water readings directly into HA statistics.
 
@@ -119,8 +88,8 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
 
         async_add_external_statistics performs upserts — it is safe
         to re-inject readings that already exist in the DB. The
-        cumulative sum is recalculated from last_sum each time to
-        ensure consistency.
+        cumulative sum is always recalculated from zero across all
+        readings to ensure consistency.
         """
         if not readings:
             _LOGGER.debug("No readings to publish")
@@ -128,7 +97,7 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
 
         local_tz = ZoneInfo(TIME_ZONE)
         stats: list[StatisticData] = []
-        running_sum = last_sum
+        running_sum = 0.0
 
         for ts, litres in sorted(readings, key=lambda r: r[0]):
             dt = datetime.fromtimestamp(ts, tz=local_tz)
@@ -157,10 +126,8 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
         _LOGGER.debug(
-            "Injected %d hourly water statistics "
-            "(%.1f L → %.1f L cumulative)",
+            "Injected %d hourly water statistics (0.0 L → %.1f L cumulative)",
             len(stats),
-            last_sum,
             running_sum,
         )
 
@@ -185,24 +152,12 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
                 f"Error communicating with IAWAI: {err}"
             ) from err
 
-        # ------------------------------------------------------------------
         # Inject backdated hourly statistics into the HA recorder.
         # This powers the Water dashboard with correct hourly bars.
-        #
-        # We always re-inject all readings because async_add_external_statistics
-        # upserts — existing entries are updated, new ones are inserted.
-        # The last_sum seed ensures the cumulative total is correct.
-        # ------------------------------------------------------------------
-        last_sum = await self._async_get_last_stat_sum()
+        # upserts mean re-injecting existing entries is safe.
+        self._publish_water_statistics(all_readings)
 
-        # On a fresh install last_sum is 0.0 and all readings are injected.
-        # On subsequent runs last_sum is the DB total and all_readings
-        # contains the full history — upserts handle the overlap safely.
-        self._publish_water_statistics(all_readings, last_sum=0.0)
-
-        # ------------------------------------------------------------------
-        # Isolate yesterday's readings for the daily glanceable sensor.
-        # ------------------------------------------------------------------
+        # Isolate yesterday's readings for the glanceable daily sensor.
         local_tz = ZoneInfo(TIME_ZONE)
         today = datetime.now(local_tz).date()
         yesterday = today - timedelta(days=1)
@@ -214,25 +169,20 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
             datetime.combine(today, time.min, tzinfo=local_tz).timestamp()
         )
 
-        yesterday_readings = [
-            (ts, litres)
+        yesterday_litres = sum(
+            litres
             for ts, litres in all_readings
             if yesterday_start <= ts < today_start
-        ]
-        yesterday_litres = sum(litres for _, litres in yesterday_readings)
+        )
 
         _LOGGER.debug(
-            "Cumulative total: %.1f L | Yesterday (%s): %.1f L "
-            "from %d hourly readings",
+            "Cumulative total: %.1f L | Yesterday (%s): %.1f L",
             cumulative_litres,
             yesterday,
             yesterday_litres,
-            len(yesterday_readings),
         )
 
         return {
-            "all_readings": all_readings,
-            "yesterday_readings": yesterday_readings,
             "yesterday_litres": yesterday_litres,
             "cumulative_litres": cumulative_litres,
             "last_updated": datetime.now(tz=timezone.utc).isoformat(),
