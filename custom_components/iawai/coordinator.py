@@ -1,7 +1,7 @@
 
 """Data coordinator for the IAWAI Water integration."""
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import logging
 from zoneinfo import ZoneInfo
 
@@ -13,6 +13,7 @@ from homeassistant.components.recorder.models import (
 )
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
+    get_last_statistics,
 )
 from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
@@ -73,12 +74,57 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     # ------------------------------------------------------------------
-    # Statistics injection
+    # Statistics helpers
     # ------------------------------------------------------------------
+
+    async def _async_get_last_stat(self) -> tuple[float, date | None]:
+        """Return (last_sum, last_date) from the HA statistics DB.
+
+        last_sum  — cumulative total stored in the DB; used as the
+                    starting point for new injected entries so the
+                    running total is never double-counted.
+        last_date — date of the most recent DB entry; passed to
+                    fetch_cumulative_total() as the start of the next
+                    fetch window so only new readings are requested.
+
+        Returns (0.0, None) on a fresh install (no existing statistics).
+        """
+        recorder = get_instance(self.hass)
+        last = await recorder.async_add_executor_job(
+            get_last_statistics,
+            self.hass,
+            1,
+            STAT_ID,
+            False,
+            {"sum", "start"},
+        )
+
+        if not last or STAT_ID not in last or not last[STAT_ID]:
+            _LOGGER.debug(
+                "No existing statistics for %s — full history fetch required",
+                STAT_ID,
+            )
+            return 0.0, None
+
+        entry = last[STAT_ID][0]
+        last_sum = entry.get("sum") or 0.0
+        last_ts = entry.get("start")
+
+        last_date: date | None = None
+        if last_ts:
+            last_date = datetime.fromtimestamp(
+                last_ts, tz=ZoneInfo(TIME_ZONE)
+            ).date()
+
+        _LOGGER.debug(
+            "Last DB statistic: %.1f L on %s", last_sum, last_date
+        )
+        return last_sum, last_date
 
     def _publish_water_statistics(
         self,
         readings: list[tuple[int, float]],
+        last_sum: float,
     ) -> None:
         """Inject hourly water readings directly into HA statistics.
 
@@ -87,17 +133,19 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         arrives with a ~24h lag from IAWAI.
 
         async_add_external_statistics performs upserts — it is safe
-        to re-inject readings that already exist in the DB. The
-        cumulative sum is always recalculated from zero across all
-        readings to ensure consistency.
+        to re-inject readings that already exist in the DB.
+
+        last_sum is the cumulative total already in the DB. New
+        readings are accumulated on top of it so the running total
+        remains correct across incremental updates.
         """
         if not readings:
-            _LOGGER.debug("No readings to publish")
+            _LOGGER.debug("No new readings to publish")
             return
 
         local_tz = ZoneInfo(TIME_ZONE)
         stats: list[StatisticData] = []
-        running_sum = 0.0
+        running_sum = last_sum
 
         for ts, litres in sorted(readings, key=lambda r: r[0]):
             dt = datetime.fromtimestamp(ts, tz=local_tz)
@@ -126,8 +174,10 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
         _LOGGER.debug(
-            "Injected %d hourly water statistics (0.0 L → %.1f L cumulative)",
+            "Injected %d hourly water statistics "
+            "(%.1f L → %.1f L cumulative)",
             len(stats),
+            last_sum,
             running_sum,
         )
 
@@ -136,10 +186,16 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
 
     async def _async_update_data(self) -> dict:
-        """Fetch all readings, inject statistics, return sensor values."""
+        """Fetch new readings, inject statistics, return sensor values."""
+
+        # Seed from the DB — get the last known sum and date.
+        # On first run both are zero/None → full history is fetched.
+        # On subsequent runs → only readings since last_date are fetched.
+        last_sum, last_date = await self._async_get_last_stat()
+
         try:
-            all_readings, cumulative_litres = (
-                await self.client.fetch_cumulative_total()
+            new_readings, new_total = (
+                await self.client.fetch_cumulative_total(since=last_date)
             )
 
         except IAWAIAuthenticationError as err:
@@ -152,10 +208,12 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
                 f"Error communicating with IAWAI: {err}"
             ) from err
 
-        # Inject backdated hourly statistics into the HA recorder.
-        # This powers the Water dashboard with correct hourly bars.
-        # upserts mean re-injecting existing entries is safe.
-        self._publish_water_statistics(all_readings)
+        # Inject only the new readings, continuing the cumulative sum
+        # from where the DB left off.
+        self._publish_water_statistics(new_readings, last_sum=last_sum)
+
+        # Cumulative total for the sensor = DB total + new readings.
+        cumulative_litres = last_sum + new_total
 
         # Isolate yesterday's readings for the glanceable daily sensor.
         local_tz = ZoneInfo(TIME_ZONE)
@@ -171,15 +229,17 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
 
         yesterday_litres = sum(
             litres
-            for ts, litres in all_readings
+            for ts, litres in new_readings
             if yesterday_start <= ts < today_start
         )
 
         _LOGGER.debug(
-            "Cumulative total: %.1f L | Yesterday (%s): %.1f L",
+            "Cumulative total: %.1f L | Yesterday (%s): %.1f L | "
+            "New readings: %d",
             cumulative_litres,
             yesterday,
             yesterday_litres,
+            len(new_readings),
         )
 
         return {

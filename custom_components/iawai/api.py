@@ -1,8 +1,9 @@
+
 """API client for the IAWAI Water integration."""
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 import logging
 
@@ -202,22 +203,38 @@ class IAWAIClient:
 
     async def fetch_cumulative_total(
         self,
+        since: date | None = None,
     ) -> tuple[list[tuple[int, float]], float]:
-        """Fetch all readings from HISTORY_START to end of yesterday.
+        """Fetch readings from a start date to end of yesterday.
+
+        On first run (since=None) fetches the full history from
+        HISTORY_START. On subsequent runs, pass the date of the last
+        known DB entry so only new readings are fetched.
 
         Requests are made in CHUNK_DAYS-sized windows to avoid
-        overwhelming the API with a single enormous request.
+        overwhelming the API with a single large request.
 
         Returns a tuple of:
-            - all_readings : list of (unix_timestamp, litres) tuples
-            - cumulative   : sum of all litre values
+            - readings   : list of (unix_timestamp, litres) tuples
+            - total      : sum of all litre values in this fetch
         """
         local_tz = ZoneInfo(TIME_ZONE)
         today = datetime.now(local_tz).date()
         yesterday = today - timedelta(days=1)
 
+        # Use provided start date or fall back to the full history start.
+        start_date = since if since is not None else HISTORY_START
+
+        # Never go beyond yesterday — today's data is not yet published.
+        if start_date > yesterday:
+            _LOGGER.debug(
+                "Last DB entry (%s) is already current — nothing to fetch",
+                start_date,
+            )
+            return [], 0.0
+
         all_readings: list[tuple[int, float]] = []
-        chunk_start = HISTORY_START
+        chunk_start = start_date
 
         while chunk_start <= yesterday:
             chunk_end = min(
@@ -244,16 +261,14 @@ class IAWAIClient:
             all_readings.extend(chunk)
             chunk_start = chunk_end
 
-        cumulative = sum(litres for _, litres in all_readings)
+        total = sum(litres for _, litres in all_readings)
 
         _LOGGER.debug(
-            "Cumulative total: %.1f L across %d hourly readings "
-            "(%s → %s)",
-            cumulative,
+            "Fetched %.1f L across %d hourly readings (%s → %s)",
+            total,
             len(all_readings),
-            HISTORY_START,
+            start_date,
             yesterday,
         )
 
-        return all_readings, cumulative
-
+        return all_readings, total
