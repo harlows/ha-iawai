@@ -5,13 +5,14 @@ from datetime import datetime, timedelta
 import logging
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
 
-from .api import IAWAIClient, IAWAIError
+from .api import IAWAIAuthenticationError, IAWAIClient, IAWAIError
 from .const import (
     CONF_ACCOUNT_ID,
     CONF_METER_GROUP_ID,
@@ -60,9 +61,14 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict:
         """Fetch yesterday's completed hourly readings."""
         try:
-            readings = await self.client.fetch_yesterday()
+	    readings = await self.client.fetch_yesterday()
 
-        except IAWAIError as err:
+	except IAWAIAuthenticationError as err:
+	    raise ConfigEntryAuthFailed(
+		f"IAWAI credentials are no longer valid: {err}"
+	    ) from err
+
+	except IAWAIError as err:
             raise UpdateFailed(
                 f"Error communicating with IAWAI: {err}"
             ) from err
