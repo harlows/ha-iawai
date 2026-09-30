@@ -56,6 +56,9 @@ class IAWAIClient:
 
         self._token: str | None = None
 
+    # ------------------------------------------------------------------
+    # Authentication
+    # ------------------------------------------------------------------
 
     async def authenticate(self) -> None:
         """Obtain a fresh bearer token."""
@@ -89,69 +92,44 @@ class IAWAIClient:
             )
 
         self._token = token
+        _LOGGER.debug("Successfully authenticated with IAWAI")
 
-        _LOGGER.debug(
-            "Successfully authenticated with IAWAI"
-        )
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-    async def fetch_readings(
+    async def _do_fetch(
         self,
-        start: int,
-        end: int,
-    ) -> list[tuple[int, float]]:
-        """Fetch hourly water consumption readings."""
-        if self._token is None:
-            await self.authenticate()
+        headers: dict,
+        payload: dict,
+    ) -> dict:
+        """Single POST to the meter endpoint; raises on HTTP error."""
+        async with self.session.post(
+            API_BASE_URL + self.meter_path,
+            headers=headers,
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
 
-        headers = {
+    def _build_headers(self) -> dict:
+        """Return auth headers using the current token."""
+        return {
             "Authorization": f"Bearer {self._token}",
-            "X-Timezone": "Pacific/Auckland",
+            "X-Timezone": TIME_ZONE,
         }
 
-        payload = {
-            "From": start,
-            "To": end,
-            "Interval": API_INTERVAL_SECONDS,
-            "Agg": API_AGGREGATION,
-        }
+    @staticmethod
+    def _parse_readings(result: dict) -> list[tuple[int, float]]:
+        """Extract (unix_timestamp, litres) tuples from an API response.
 
-        try:
-            async with self.session.post(
-                API_BASE_URL + self.meter_path,
-                headers=headers,
-                json=payload,
-                timeout=REQUEST_TIMEOUT,
-            ) as response:
-
-                if response.status == 401:
-                    _LOGGER.debug(
-                        "IAWAI token expired; re-authenticating"
-                    )
-
-                    await self.authenticate()
-
-                    headers["Authorization"] = (
-                        f"Bearer {self._token}"
-                    )
-
-                    async with self.session.post(
-                        API_BASE_URL + self.meter_path,
-                        headers=headers,
-                        json=payload,
-                        timeout=REQUEST_TIMEOUT,
-                    ) as retry_response:
-                        retry_response.raise_for_status()
-                        result = await retry_response.json()
-
-                else:
-                    response.raise_for_status()
-                    result = await response.json()
-
-        except aiohttp.ClientError as err:
-            raise IAWAIError(
-                f"Unable to retrieve IAWAI water data: {err}"
-            ) from err
-
+        Oplex has returned both:
+            [{"parsedValue": 23}]
+        and:
+            [23.0]
+        for the inner ``value`` list, so both shapes are handled.
+        """
         readings: list[tuple[int, float]] = []
 
         for item in result.get("data", []):
@@ -162,10 +140,6 @@ class IAWAIClient:
 
             first = values[0]
 
-            # Oplex has returned both:
-            #   [{"parsedValue": 23}]
-            # and:
-            #   [23.0]
             if isinstance(first, dict):
                 value = first.get("parsedValue")
             else:
@@ -176,11 +150,53 @@ class IAWAIClient:
 
             timestamp = int(item["unixTime"])
             litres = float(value)
-
             readings.append((timestamp, litres))
 
         return readings
 
+    # ------------------------------------------------------------------
+    # Public fetch methods
+    # ------------------------------------------------------------------
+
+    async def fetch_readings(
+        self,
+        start: int,
+        end: int,
+    ) -> list[tuple[int, float]]:
+        """Fetch hourly water consumption readings between two Unix timestamps.
+
+        Handles a single token-expiry retry transparently.
+        """
+        if self._token is None:
+            await self.authenticate()
+
+        headers = self._build_headers()
+        payload = {
+            "From": start,
+            "To": end,
+            "Interval": API_INTERVAL_SECONDS,
+            "Agg": API_AGGREGATION,
+        }
+
+        try:
+            try:
+                result = await self._do_fetch(headers, payload)
+
+            except aiohttp.ClientResponseError as err:
+                if err.status != 401:
+                    raise
+
+                _LOGGER.debug("IAWAI token expired; re-authenticating")
+                await self.authenticate()
+                headers = self._build_headers()
+                result = await self._do_fetch(headers, payload)
+
+        except aiohttp.ClientError as err:
+            raise IAWAIError(
+                f"Unable to retrieve IAWAI water data: {err}"
+            ) from err
+
+        return self._parse_readings(result)
 
     async def fetch_yesterday(self) -> list[tuple[int, float]]:
         """Fetch yesterday's hourly readings using local day boundaries."""
@@ -188,14 +204,11 @@ class IAWAIClient:
         today = datetime.now(local_tz).date()
         yesterday = today - timedelta(days=1)
 
-        start_local = datetime.combine(
-            yesterday, time.min, tzinfo=local_tz
+        start = int(
+            datetime.combine(yesterday, time.min, tzinfo=local_tz).timestamp()
         )
-        end_local = datetime.combine(
-            today, time.min, tzinfo=local_tz
+        end = int(
+            datetime.combine(today, time.min, tzinfo=local_tz).timestamp()
         )
-
-        start = int(start_local.timestamp())
-        end = int(end_local.timestamp())
 
         return await self.fetch_readings(start, end)
