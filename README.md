@@ -207,4 +207,4 @@ for injecting backdated hourly data into the HA recorder.
 
 ## Licence
 
-MIT# ha-iawai
+MIT
