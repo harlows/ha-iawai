@@ -35,6 +35,7 @@ from .const import (
     CONF_USERNAME,
     DOMAIN,
     NAME,
+    OVERLAP_DAYS,
     TIME_ZONE,
     UPDATE_INTERVAL,
 )
@@ -78,20 +79,28 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
     # Statistics helpers
     # ------------------------------------------------------------------
 
-    async def _async_get_last_stat(self) -> tuple[float, date | None]:
-        """Return (last_sum, last_date) from the HA statistics DB.
+    async def _async_get_seed(self) -> tuple[float, date | None]:
+        """Return (seed_sum, last_date) from the HA statistics DB.
 
-        last_sum  — cumulative total stored in the DB; used as the
-                    starting point for new injected entries so the
-                    running total is never double-counted.
-        last_date — date of the most recent DB entry; one day is added
-                    before passing to fetch_cumulative_total() so that
-                    the last known day is not re-fetched and its litres
-                    double-counted on top of last_sum.
+        The overlap window means we always re-fetch and re-inject the
+        last OVERLAP_DAYS days on every run. To avoid double-counting,
+        we need the cumulative sum from the entry JUST BEFORE the
+        overlap window starts — not from the latest entry.
 
-        Returns (0.0, None) on a fresh install (no existing statistics).
+        Example with OVERLAP_DAYS=2 and last_date=2026-09-30:
+            overlap_start = 2026-09-28 00:00
+            seed_sum = cumulative total at 2026-09-27 23:00
+            fetch    = 2026-09-28 → 2026-09-30 (2 days re-fetched)
+            inject   = those readings on top of seed_sum
+
+        This means any late-arriving hours within the overlap window
+        are always caught and upserted correctly.
+
+        Returns (0.0, None) on a fresh install.
         """
         recorder = get_instance(self.hass)
+
+        # Step 1 — find the most recent DB entry to get last_date.
         last = await recorder.async_add_executor_job(
             get_last_statistics,
             self.hass,
@@ -109,19 +118,48 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
             return 0.0, None
 
         entry = last[STAT_ID][0]
-        last_sum = entry.get("sum") or 0.0
         last_ts = entry.get("start")
 
-        last_date: date | None = None
-        if last_ts:
-            last_date = datetime.fromtimestamp(
-                last_ts, tz=ZoneInfo(TIME_ZONE)
-            ).date()
+        if not last_ts:
+            return 0.0, None
+
+        local_tz = ZoneInfo(TIME_ZONE)
+        last_date = datetime.fromtimestamp(last_ts, tz=local_tz).date()
+
+        # Step 2 — find the sum from the hour just before the overlap
+        # window starts. This is the seed for re-injecting the window.
+        overlap_start = datetime.combine(
+            last_date - timedelta(days=OVERLAP_DAYS),
+            time.min,
+            tzinfo=local_tz,
+        )
+
+        # Query the hour immediately before overlap_start.
+        pre_overlap_end = overlap_start
+        pre_overlap_start = overlap_start - timedelta(hours=1)
+
+        result = await recorder.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            pre_overlap_start,
+            pre_overlap_end,
+            {STAT_ID},
+            "hour",
+            None,
+            {"sum"},
+        )
+
+        entries = result.get(STAT_ID, [])
+        seed_sum = entries[-1].get("sum") or 0.0 if entries else 0.0
 
         _LOGGER.debug(
-            "Last DB statistic: %.1f L on %s", last_sum, last_date
+            "Last DB entry: %s | Overlap window starts: %s | "
+            "Seed sum: %.1f L",
+            last_date,
+            overlap_start.date(),
+            seed_sum,
         )
-        return last_sum, last_date
+        return seed_sum, last_date
 
     async def _async_get_yesterday_litres(
         self,
@@ -168,7 +206,7 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
     def _publish_water_statistics(
         self,
         readings: list[tuple[int, float]],
-        last_sum: float,
+        seed_sum: float,
     ) -> None:
         """Inject hourly water readings directly into HA statistics.
 
@@ -176,12 +214,12 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         Water dashboard shows correct hourly bars even though data
         arrives with a ~24h lag from IAWAI.
 
-        async_add_external_statistics performs upserts — it is safe
-        to re-inject readings that already exist in the DB.
+        async_add_external_statistics performs upserts — safe to
+        re-inject readings that already exist in the DB.
 
-        last_sum is the cumulative total already in the DB. New
-        readings are accumulated on top of it so the running total
-        remains correct across incremental updates.
+        seed_sum is the cumulative total from just before the overlap
+        window. Readings are accumulated on top of it so the running
+        total is correct without double-counting.
         """
         if not readings:
             _LOGGER.debug("No new readings to publish")
@@ -189,7 +227,7 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
 
         local_tz = ZoneInfo(TIME_ZONE)
         stats: list[StatisticData] = []
-        running_sum = last_sum
+        running_sum = seed_sum
 
         for ts, litres in sorted(readings, key=lambda r: r[0]):
             dt = datetime.fromtimestamp(ts, tz=local_tz)
@@ -221,7 +259,7 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
             "Injected %d hourly water statistics "
             "(%.1f L → %.1f L cumulative)",
             len(stats),
-            last_sum,
+            seed_sum,
             running_sum,
         )
 
@@ -232,17 +270,22 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict:
         """Fetch new readings, inject statistics, return sensor values."""
 
-        # Seed from the DB — get the last known sum and date.
+        # Seed from the DB.
+        # seed_sum  — cumulative total just before the overlap window.
+        # last_date — date of the most recent DB entry.
         # On first run both are zero/None → full history is fetched.
-        # On subsequent runs → only readings AFTER last_date are fetched.
-        last_sum, last_date = await self._async_get_last_stat()
+        seed_sum, last_date = await self._async_get_seed()
 
-        # Advance by one day so fetch starts AFTER the last DB entry.
-        # Without this, the last known day is re-fetched and its litres
-        # are added on top of a last_sum that already contains them,
-        # causing yesterday's consumption to appear doubled.
-        since = (
-            last_date + timedelta(days=1) if last_date is not None else None
+        # Fetch from OVERLAP_DAYS before last_date so late-arriving
+        # hourly data within a partially published day is always caught.
+        # On first run (last_date=None) fetches full history.
+        since: date | None = None
+        if last_date is not None:
+            since = last_date - timedelta(days=OVERLAP_DAYS)
+
+        _LOGGER.debug(
+            "Fetching since %s (last_date=%s, overlap=%d days)",
+            since, last_date, OVERLAP_DAYS,
         )
 
         try:
@@ -260,19 +303,16 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
                 f"Error communicating with IAWAI: {err}"
             ) from err
 
-        # Inject only the new readings, continuing the cumulative sum
-        # from where the DB left off.
-        self._publish_water_statistics(new_readings, last_sum=last_sum)
+        # Inject readings starting from seed_sum. The overlap window
+        # means some of these upsert existing entries — that is safe
+        # and corrects any previously incomplete hours.
+        self._publish_water_statistics(new_readings, seed_sum=seed_sum)
 
-        # Cumulative total for the sensor = DB total + new readings.
-        cumulative_litres = last_sum + new_total
+        # Cumulative total for the sensor = seed_sum + new_total.
+        cumulative_litres = seed_sum + new_total
 
-        # ------------------------------------------------------------------
-        # Yesterday's total is read from the recorder DB, not from the
-        # incremental fetch. This ensures the sensor always shows the
-        # correct value even on days when no new API data is available
-        # (i.e. when new_readings is empty).
-        # ------------------------------------------------------------------
+        # Yesterday's total is read from the recorder DB so it is
+        # always correct regardless of what the API returned today.
         local_tz = ZoneInfo(TIME_ZONE)
         today = datetime.now(local_tz).date()
         yesterday = today - timedelta(days=1)
@@ -283,7 +323,7 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
 
         _LOGGER.debug(
             "Cumulative total: %.1f L | Yesterday (%s): %.1f L | "
-            "New readings: %d | Fetched since: %s",
+            "New readings: %d | Since: %s",
             cumulative_litres,
             yesterday,
             yesterday_litres,
