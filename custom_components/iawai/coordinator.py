@@ -1,4 +1,3 @@
-
 """Data coordinator for the IAWAI Water integration."""
 
 from datetime import date, datetime, time, timedelta, timezone
@@ -89,8 +88,8 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
 
         Example with OVERLAP_DAYS=2 and last_date=2026-09-30:
             overlap_start = 2026-09-28 00:00
-            seed_sum = cumulative total at 2026-09-27 23:00
-            fetch    = 2026-09-28 → 2026-09-30 (2 days re-fetched)
+            seed_sum = cumulative total at 2026-09-27 (last hour before window)
+            fetch    = 2026-09-28 → today (2 days re-fetched + any new days)
             inject   = those readings on top of seed_sum
 
         This means any late-arriving hours within the overlap window
@@ -126,23 +125,22 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         local_tz = ZoneInfo(TIME_ZONE)
         last_date = datetime.fromtimestamp(last_ts, tz=local_tz).date()
 
-        # Step 2 — find the sum from the hour just before the overlap
-        # window starts. This is the seed for re-injecting the window.
+        # Step 2 — find the cumulative sum from just before the overlap
+        # window starts. This is the fixed baseline for rebuilding the window.
         overlap_start = datetime.combine(
             last_date - timedelta(days=OVERLAP_DAYS),
             time.min,
             tzinfo=local_tz,
         )
 
-        # Query the hour immediately before overlap_start.
-        pre_overlap_end = overlap_start
-        pre_overlap_start = overlap_start - timedelta(hours=1)
-
+        # Look back up to 3 days before overlap_start to find the last
+        # recorded sum. A 1-hour window risks returning empty on data gaps;
+        # a 3-day window is robust against any realistic gap in the series.
         result = await recorder.async_add_executor_job(
             statistics_during_period,
             self.hass,
-            pre_overlap_start,
-            pre_overlap_end,
+            overlap_start - timedelta(days=3),
+            overlap_start,
             {STAT_ID},
             "hour",
             None,
@@ -150,58 +148,15 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
         entries = result.get(STAT_ID, [])
-        seed_sum = entries[-1].get("sum") or 0.0 if entries else 0.0
+        seed_sum = float(entries[-1]["sum"]) if entries else 0.0
 
         _LOGGER.debug(
-            "Last DB entry: %s | Overlap window starts: %s | "
-            "Seed sum: %.1f L",
+            "Last DB entry: %s | Overlap window starts: %s | Seed sum: %.1f L",
             last_date,
             overlap_start.date(),
             seed_sum,
         )
         return seed_sum, last_date
-
-    async def _async_get_yesterday_litres(
-        self,
-        local_tz: ZoneInfo,
-        yesterday: date,
-        today: date,
-    ) -> float:
-        """Read yesterday's total consumption from the recorder DB.
-
-        Sums the hourly ``state`` values (litres per hour) for
-        yesterday from the statistics table. This is independent of
-        the incremental fetch — it returns the correct value even on
-        days when no new API data is available.
-        """
-        yesterday_start_dt = datetime.combine(
-            yesterday, time.min, tzinfo=local_tz
-        )
-        today_start_dt = datetime.combine(
-            today, time.min, tzinfo=local_tz
-        )
-
-        recorder = get_instance(self.hass)
-        result = await recorder.async_add_executor_job(
-            statistics_during_period,
-            self.hass,
-            yesterday_start_dt,
-            today_start_dt,
-            {STAT_ID},
-            "hour",
-            None,
-            {"state"},
-        )
-
-        yesterday_litres = sum(
-            entry.get("state") or 0.0
-            for entry in result.get(STAT_ID, [])
-        )
-
-        _LOGGER.debug(
-            "Yesterday (%s) from DB: %.1f L", yesterday, yesterday_litres
-        )
-        return yesterday_litres
 
     def _publish_water_statistics(
         self,
@@ -256,8 +211,7 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
         _LOGGER.debug(
-            "Injected %d hourly water statistics "
-            "(%.1f L → %.1f L cumulative)",
+            "Injected %d hourly water statistics (%.1f L → %.1f L cumulative)",
             len(stats),
             seed_sum,
             running_sum,
@@ -288,6 +242,18 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
             since, last_date, OVERLAP_DAYS,
         )
 
+        # Resolve yesterday's boundaries once, before the API call.
+        # We need these both for the fresh-data sum and as a fallback.
+        local_tz = ZoneInfo(TIME_ZONE)
+        today = datetime.now(local_tz).date()
+        yesterday = today - timedelta(days=1)
+        yesterday_start_ts = int(
+            datetime.combine(yesterday, time.min, tzinfo=local_tz).timestamp()
+        )
+        today_start_ts = int(
+            datetime.combine(today, time.min, tzinfo=local_tz).timestamp()
+        )
+
         try:
             new_readings, new_total = (
                 await self.client.fetch_cumulative_total(since=since)
@@ -311,19 +277,51 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
         # Cumulative total for the sensor = seed_sum + new_total.
         cumulative_litres = seed_sum + new_total
 
-        # Yesterday's total is read from the recorder DB so it is
-        # always correct regardless of what the API returned today.
-        local_tz = ZoneInfo(TIME_ZONE)
-        today = datetime.now(local_tz).date()
-        yesterday = today - timedelta(days=1)
-
-        yesterday_litres = await self._async_get_yesterday_litres(
-            local_tz, yesterday, today
-        )
+        # ── Yesterday's total ────────────────────────────────────────────
+        #
+        # Prefer summing directly from the freshly fetched readings.
+        # async_add_external_statistics() only *queues* writes; querying
+        # the DB on the same run races against uncommitted data and
+        # produces a one-cycle lag (the bug this fixes).
+        #
+        # Fall back to the DB only when yesterday falls entirely outside
+        # the fetch window — possible after a long outage but not in
+        # normal hourly operation.
+        yesterday_in_window = since is None or since <= yesterday
+        if yesterday_in_window:
+            yesterday_litres = sum(
+                litres
+                for ts, litres in new_readings
+                if yesterday_start_ts <= ts < today_start_ts
+            )
+        else:
+            # Rare fallback: yesterday predates our fetch window.
+            yesterday_start_dt = datetime.combine(
+                yesterday, time.min, tzinfo=local_tz
+            )
+            today_start_dt = datetime.combine(today, time.min, tzinfo=local_tz)
+            recorder = get_instance(self.hass)
+            result = await recorder.async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                yesterday_start_dt,
+                today_start_dt,
+                {STAT_ID},
+                "hour",
+                None,
+                {"state"},
+            )
+            yesterday_litres = sum(
+                entry.get("state") or 0.0
+                for entry in result.get(STAT_ID, [])
+            )
+            _LOGGER.debug(
+                "Yesterday (%s) from DB fallback: %.1f L", yesterday, yesterday_litres
+            )
 
         _LOGGER.debug(
             "Cumulative total: %.1f L | Yesterday (%s): %.1f L | "
-            "New readings: %d | Since: %s",
+            "Processed: %d readings | Since: %s",
             cumulative_litres,
             yesterday,
             yesterday_litres,
