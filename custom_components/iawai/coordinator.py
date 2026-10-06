@@ -83,11 +83,27 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
 
         local_tz = ZoneInfo(TIME_ZONE)
         last_date = datetime.fromtimestamp(entry["start"], tz=local_tz).date()
-        seed_sum = float(entry.get("sum") or 0.0)
+        
+        # Seed must come from the last recorded hour strictly BEFORE last_date.
+        # Query backwards from the start of last_date to find it.
+        seed_window_end = datetime.combine(last_date, time.min, tzinfo=local_tz)
 
-        _LOGGER.debug("Last DB entry: %s | Seed sum: %.1f L", last_date, seed_sum)
+        result = await recorder.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            seed_window_end - timedelta(days=3),   # robust lookback
+            seed_window_end,                        # exclusive: up to but not including last_date
+            {STAT_ID}, "hour", None, {"sum"},
+        )
+        entries = result.get(STAT_ID, [])
+        seed_sum = float(entries[-1]["sum"]) if entries else 0.0
+
+        _LOGGER.debug(
+           "Last DB entry: %s | Seed (last hour before %s): %.1f L",
+           last_date, last_date, seed_sum,
+        )
         return seed_sum, last_date
-
+        
     def _publish_water_statistics(self, readings: list[tuple[int, float]], seed_sum: float) -> None:
         """Inject hourly water readings directly into HA statistics."""
         if not readings:
