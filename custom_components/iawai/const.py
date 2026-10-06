@@ -22,12 +22,6 @@ API_AGGREGATION = 1
 REQUEST_TIMEOUT = ClientTimeout(total=60)
 CHUNK_DAYS = 7
 
-# Number of days to re-fetch on every incremental update.
-# Catches late-arriving hourly data within a partially published day.
-# e.g. OVERLAP_DAYS=2 means the last 2 days are always re-fetched
-# and upserted, even if they were already injected in a previous run.
-OVERLAP_DAYS = 2
-
 # Data and timezone settings
 TIME_ZONE = "Pacific/Auckland"
 HISTORY_START = date(2026, 3, 26)
