@@ -3,7 +3,9 @@
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_change
 
+from .const import POLL_HOURS, POLL_MINUTE
 from .coordinator import IAWAIDataUpdateCoordinator
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
@@ -19,10 +21,25 @@ async def async_setup_entry(
         dict(entry.data),
     )
 
+    # Fetch all historical data before creating entities.
+    # Note: first run makes multiple API calls (one per CHUNK_DAYS window
+    # from HISTORY_START to yesterday) so may take 10–30 seconds.
     await coordinator.async_config_entry_first_refresh()
 
     # Store coordinator on the entry — modern HA pattern (2024.x+).
     entry.runtime_data = coordinator
+
+    # Poll at 10:30 and 22:30 NZ local time, aligned to IAWAI's two
+    # daily publish batches. Unsubscribed automatically on unload.
+    entry.async_on_unload(
+        async_track_time_change(
+            hass,
+            lambda _now: hass.async_create_task(coordinator.async_refresh()),
+            hour=list(POLL_HOURS),
+            minute=POLL_MINUTE,
+            second=0,
+        )
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

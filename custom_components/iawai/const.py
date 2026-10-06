@@ -1,7 +1,7 @@
 
 """Constants for the IAWAI Water integration."""
 
-from datetime import date, timedelta
+from datetime import date
 
 from aiohttp import ClientTimeout
 
@@ -26,11 +26,9 @@ CHUNK_DAYS = 7
 TIME_ZONE = "Pacific/Auckland"
 HISTORY_START = date(2026, 3, 26)
 
-# Home Assistant update interval
-UPDATE_INTERVAL_HOURS = 1
-
-# Derived — kept in sync automatically
-UPDATE_INTERVAL = timedelta(hours=UPDATE_INTERVAL_HOURS)
+# IAWAI publishes in two daily batches (~10am and ~10pm NZ).
+POLL_HOURS = (10, 22)
+POLL_MINUTE = 30
 
 # Config-entry keys
 CONF_USERNAME = "username"

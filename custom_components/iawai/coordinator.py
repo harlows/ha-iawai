@@ -36,7 +36,6 @@ from .const import (
     DOMAIN,
     NAME,
     TIME_ZONE,
-    UPDATE_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,7 +58,7 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
             meter_group_id=config[CONF_METER_GROUP_ID],
             meter_id=config[CONF_METER_ID],
         )
-        super().__init__(hass, _LOGGER, name=NAME, update_interval=UPDATE_INTERVAL)
+        super().__init__(hass, _LOGGER, name=NAME, update_interval=None)
 
     async def _async_get_seed(self) -> tuple[float, date | None]:
         """Return (seed_sum, last_date) from the HA statistics DB.
