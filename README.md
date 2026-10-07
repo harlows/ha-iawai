@@ -17,10 +17,11 @@ with the **Energy → Water dashboard**.
   history start date, powered by HA's external statistics API
 - 💧 **Yesterday's consumption sensor** — glanceable daily total in litres
 - 📈 **Cumulative total sensor** — rising lifetime total for automations
-- 🔄 **Incremental updates** — only fetches new data each run; full history
-  injected once on first install
-- 🕐 **Overlap window** — re-fetches the last 2 days on every run to catch
-  late-arriving hourly data from IAWAI's multi-tranche publish schedule
+- 🔄 **Incremental updates** — only fetches new data each run; full
+  history injected once on first install
+- 🕐 **Twice-daily polling** — syncs at 10:30 and 22:30 NZDT to align
+  with IAWAI's two daily publish batches, keeping sensors current
+  within 30 minutes of each update
 - 🔑 **Token refresh** — handles bearer token expiry transparently
 
 ---
@@ -134,24 +135,20 @@ The dashboard will populate with historical daily bars back to
 ## Known Limitations
 
 ### ~24-hour data lag
-IAWAI publishes consumption data with approximately a **24-hour lag**.
-Today's usage will not appear until tomorrow. Data is published in
-multiple tranches throughout the day:
-
-| Tranche | Approximate time (NZDT) | Coverage |
-|---|---|---|
-| 1 | ~00:00 | Partial — early hours |
-| 2 | ~10:00 | More hours added |
-| 3 | ~14:00 | Remainder of previous day |
-
-The integration uses a **2-day overlap window** to catch all tranches
-correctly. Each run re-fetches the last 2 days and upserts any newly
-published hours.
-
-> **Note:** The publish schedule above is based on limited observation
-> (as at October 2026). Your meter may differ. See
-> [issue #4](https://github.com/harlows/ha-iawai/issues) for ongoing
-> observations.
+ 
+IAWAI publishes consumption data with approximately a **24-hour lag** —
+today's usage will not appear until tomorrow. Data arrives in two daily
+batches:
+ 
+| Batch | Approximate time (NZDT) | Coverage |
+|-------|------------------------|----------|
+| 1 | ~10:00 | Previous day 07:00 – 19:00 |
+| 2 | ~22:00 | Previous day 19:00 – current day 07:00 |
+ 
+Together the two batches provide a complete 24-hour picture from the
+previous day. The integration polls at **10:30 and 22:30 NZDT** to
+align with these batches, so sensors are updated within 30 minutes of
+each publish.
 
 ### History start date is hardcoded
 `HISTORY_START` in `const.py` must be set manually before installation.
