@@ -2,7 +2,7 @@
 {
   "domain": "iawai",
   "name": "IAWAI Water",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "documentation": "https://github.com/harlows/ha-iawai",
   "issue_tracker": "https://github.com/harlows/ha-iawai/issues",
   "codeowners": [@harlows],
