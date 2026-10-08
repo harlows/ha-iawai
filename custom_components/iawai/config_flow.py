@@ -6,22 +6,21 @@ import logging
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import (
     IAWAIAuthenticationError,
     IAWAIClient,
+    IAWAIDiscoveryError,
     IAWAIError,
 )
 from .const import (
-    CONF_ACCOUNT_ID,
-    CONF_METER_GROUP_ID,
-    CONF_METER_ID,
-    CONF_PASSWORD,
+    CONF_OWNER_ID,
+    CONF_PROJECT_ID,
+    CONF_SITE_GROUP_ID,
     CONF_SITE_ID,
+    CONF_PASSWORD,
     CONF_USERNAME,
     DOMAIN,
     NAME,
@@ -41,10 +40,21 @@ class IAWAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                await self._async_validate_input(user_input)
+                session = async_get_clientsession(self.hass)
+                client = IAWAIClient(
+                    session=session,
+                    username=user_input[CONF_USERNAME],
+                    password=user_input[CONF_PASSWORD],
+                )
+                await client.authenticate()
+                discovered = await self._async_discover(client)
 
             except IAWAIAuthenticationError:
                 errors["base"] = "invalid_auth"
+
+            except IAWAIDiscoveryError as err:
+                _LOGGER.error("IAWAI discovery failed: %s", err)
+                errors["base"] = str(err)
 
             except IAWAIError:
                 _LOGGER.exception("Unable to connect to IAWAI")
@@ -55,13 +65,15 @@ class IAWAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
 
             else:
+                data = {**user_input, **discovered}
+
                 unique_id = "_".join(
-                    str(user_input[key])
+                    str(data[key])
                     for key in (
-                        CONF_ACCOUNT_ID,
+                        CONF_OWNER_ID,
+                        CONF_PROJECT_ID,
+                        CONF_SITE_GROUP_ID,
                         CONF_SITE_ID,
-                        CONF_METER_GROUP_ID,
-                        CONF_METER_ID,
                     )
                 )
 
@@ -69,8 +81,8 @@ class IAWAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_configured()
 
                 return self.async_create_entry(
-                    title=f"{NAME} ({user_input[CONF_METER_ID]})",
-                    data=user_input,
+                    title=f"{NAME} ({data[CONF_SITE_ID]})",
+                    data=data,
                 )
 
         schema = vol.Schema(
@@ -81,10 +93,6 @@ class IAWAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         type=selector.TextSelectorType.PASSWORD
                     )
                 ),
-                vol.Required(CONF_ACCOUNT_ID): str,
-                vol.Required(CONF_SITE_ID): str,
-                vol.Required(CONF_METER_GROUP_ID): str,
-                vol.Required(CONF_METER_ID): str,
             }
         )
 
@@ -94,18 +102,29 @@ class IAWAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def _async_validate_input(self, user_input: dict) -> None:
-        """Validate credentials by logging in to IAWAI."""
-        session = async_get_clientsession(self.hass)
+    async def _async_discover(self, client: IAWAIClient) -> dict:
+        """Discover owner, project, site group and site IDs automatically.
 
-        client = IAWAIClient(
-            session=session,
-            username=user_input[CONF_USERNAME],
-            password=user_input[CONF_PASSWORD],
-            account_id=user_input[CONF_ACCOUNT_ID],
-            site_id=user_input[CONF_SITE_ID],
-            meter_group_id=user_input[CONF_METER_GROUP_ID],
-            meter_id=user_input[CONF_METER_ID],
-        )
+        Raises IAWAIDiscoveryError for multi-owner or multi-site accounts,
+        which require manual configuration (not yet supported).
+        """
+        owners = await client.get_accessible_owners()
 
-        await client.authenticate()
+        if len(owners) != 1:
+            raise IAWAIDiscoveryError("multiple_owners")
+
+        paths = await client.get_nav_paths(owners[0]["id"])
+
+        if len(paths) != 1:
+            raise IAWAIDiscoveryError("multiple_sites")
+
+        path = paths[0]
+
+        # Mapping confirmed against WATER_DATA_PATH ordering:
+        # /api/WaterData/{owner_id}/{project_id}/{site_group_id}/{site_id}
+        return {
+            CONF_OWNER_ID:      path["ownerId"],
+            CONF_PROJECT_ID:    path["projectId"],
+            CONF_SITE_GROUP_ID: path["siteGroupId"],
+            CONF_SITE_ID:       path["siteId"],
+        }

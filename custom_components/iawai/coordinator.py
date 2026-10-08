@@ -27,11 +27,11 @@ from homeassistant.helpers.update_coordinator import (
 
 from .api import IAWAIAuthenticationError, IAWAIClient, IAWAIError
 from .const import (
-    CONF_ACCOUNT_ID,
-    CONF_METER_GROUP_ID,
-    CONF_METER_ID,
-    CONF_PASSWORD,
+    CONF_OWNER_ID,
+    CONF_PROJECT_ID,
+    CONF_SITE_GROUP_ID,
     CONF_SITE_ID,
+    CONF_PASSWORD,
     CONF_USERNAME,
     DOMAIN,
     NAME,
@@ -53,10 +53,10 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
             session=session,
             username=config[CONF_USERNAME],
             password=config[CONF_PASSWORD],
-            account_id=config[CONF_ACCOUNT_ID],
+            owner_id=config[CONF_OWNER_ID],
+            project_id=config[CONF_PROJECT_ID],
+            site_group_id=config[CONF_SITE_GROUP_ID],
             site_id=config[CONF_SITE_ID],
-            meter_group_id=config[CONF_METER_GROUP_ID],
-            meter_id=config[CONF_METER_ID],
         )
         super().__init__(hass, _LOGGER, name=NAME, update_interval=None)
 
@@ -82,7 +82,7 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
 
         local_tz = ZoneInfo(TIME_ZONE)
         last_date = datetime.fromtimestamp(entry["start"], tz=local_tz).date()
-        
+
         # Seed must come from the last recorded hour strictly BEFORE last_date.
         # Query backwards from the start of last_date to find it.
         seed_window_end = datetime.combine(last_date, time.min, tzinfo=local_tz)
@@ -102,7 +102,7 @@ class IAWAIDataUpdateCoordinator(DataUpdateCoordinator):
            last_date, last_date, seed_sum,
         )
         return seed_sum, last_date
-        
+
     def _publish_water_statistics(self, readings: list[tuple[int, float]], seed_sum: float) -> None:
         """Inject hourly water readings directly into HA statistics."""
         if not readings:

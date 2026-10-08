@@ -40,10 +40,10 @@ class IAWAIClient:
         session: aiohttp.ClientSession,
         username: str,
         password: str,
-        account_id: str,
+        owner_id: str,
+        project_id: str,
+        site_group_id: str,
         site_id: str,
-        meter_group_id: str,
-        meter_id: str,
     ) -> None:
         """Initialise the API client."""
         self.session = session
@@ -51,10 +51,10 @@ class IAWAIClient:
         self.password = password
 
         self.meter_path = WATER_DATA_PATH.format(
-            account_id=account_id,
+            owner_id=owner_id,
+            project_id=project_id,
+            site_group_id=site_group_id,
             site_id=site_id,
-            meter_group_id=meter_group_id,
-            meter_id=meter_id,
         )
 
         self._token: str | None = None

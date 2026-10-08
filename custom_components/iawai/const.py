@@ -12,7 +12,7 @@ NAME = "IAWAI Water"
 API_BASE_URL = "https://iawai.oplex.nz"
 LOGIN_PATH = "/api/account/createtoken"
 WATER_DATA_PATH = (
-    "/api/WaterData/{account_id}/{site_id}/{meter_group_id}/{meter_id}"
+    "/api/WaterData/{owner_id}/{project_id}/{site_group_id}/{site_id}"
     "/PulseTimeSeries"
 )
 
@@ -33,7 +33,7 @@ POLL_MINUTE = 30
 # Config-entry keys
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
-CONF_ACCOUNT_ID = "account_id"
+CONF_OWNER_ID = "owner_id"
+CONF_PROJECT_ID = "project_id"
+CONF_SITE_GROUP_ID = "site_group_id"
 CONF_SITE_ID = "site_id"
-CONF_METER_GROUP_ID = "meter_group_id"
-CONF_METER_ID = "meter_id"
