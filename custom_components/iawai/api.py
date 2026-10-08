@@ -32,6 +32,10 @@ class IAWAIAuthenticationError(IAWAIError):
     """Raised when authentication fails."""
 
 
+class IAWAIDiscoveryError(IAWAIError):
+    """Raised when auto-discovery fails (e.g. multiple owners or sites)."""
+
+
 class IAWAIClient:
     """Client for the IAWAI/Oplex API."""
 
@@ -40,22 +44,30 @@ class IAWAIClient:
         session: aiohttp.ClientSession,
         username: str,
         password: str,
-        owner_id: str,
-        project_id: str,
-        site_group_id: str,
-        site_id: str,
+        owner_id: str | None = None,
+        project_id: str | None = None,
+        site_group_id: str | None = None,
+        site_id: str | None = None,
     ) -> None:
-        """Initialise the API client."""
+        """Initialise the API client.
+
+        IDs are optional during config flow — discovery methods can be
+        called before they are known. meter_path is only set when all
+        four IDs are provided (i.e. during normal coordinator operation).
+        """
         self.session = session
         self.username = username
         self.password = password
 
-        self.meter_path = WATER_DATA_PATH.format(
-            owner_id=owner_id,
-            project_id=project_id,
-            site_group_id=site_group_id,
-            site_id=site_id,
-        )
+        if all((owner_id, project_id, site_group_id, site_id)):
+            self.meter_path = WATER_DATA_PATH.format(
+                owner_id=owner_id,
+                project_id=project_id,
+                site_group_id=site_group_id,
+                site_id=site_id,
+            )
+        else:
+            self.meter_path = None
 
         self._token: str | None = None
 
@@ -96,6 +108,40 @@ class IAWAIClient:
 
         self._token = token
         _LOGGER.debug("Successfully authenticated with IAWAI")
+
+    # ------------------------------------------------------------------
+    # Discovery
+    # ------------------------------------------------------------------
+
+    async def get_accessible_owners(self) -> list:
+        """Return the list of owners accessible to this account."""
+        try:
+            async with self.session.get(
+                API_BASE_URL + "/api/owner/GetAccessibleOwners",
+                headers=self._build_headers(),
+                timeout=REQUEST_TIMEOUT,
+            ) as response:
+                response.raise_for_status()
+                return await response.json()
+        except aiohttp.ClientError as err:
+            raise IAWAIError(
+                f"Unable to retrieve IAWAI owners: {err}"
+            ) from err
+
+    async def get_nav_paths(self, owner_id: int) -> list:
+        """Return navigation paths (project/siteGroup/site) for an owner."""
+        try:
+            async with self.session.get(
+                f"{API_BASE_URL}/api/Home/GetNavPaths/{owner_id}",
+                headers=self._build_headers(),
+                timeout=REQUEST_TIMEOUT,
+            ) as response:
+                response.raise_for_status()
+                return await response.json()
+        except aiohttp.ClientError as err:
+            raise IAWAIError(
+                f"Unable to retrieve IAWAI nav paths: {err}"
+            ) from err
 
     # ------------------------------------------------------------------
     # Internal helpers

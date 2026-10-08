@@ -4,20 +4,18 @@
     "step": {
       "user": {
         "title": "IAWAI Water",
-        "description": "Enter your IAWAI/Oplex account credentials and meter identifiers. These can be found in your IAWAI account settings.",
+        "description": "Enter your IAWAI account credentials. Your meter will be discovered automatically.",
         "data": {
           "username": "Username",
-          "password": "Password",
-          "account_id": "Account ID",
-          "site_id": "Site ID",
-          "meter_group_id": "Meter Group ID",
-          "meter_id": "Meter ID"
+          "password": "Password"
         }
       }
     },
     "error": {
       "invalid_auth": "Invalid credentials. Check your username and password.",
       "cannot_connect": "Cannot connect to IAWAI. Check your network connection.",
+      "multiple_owners": "Multiple owners detected — manual configuration not yet supported.",
+      "multiple_sites": "Multiple sites detected — manual configuration not yet supported.",
       "unknown": "Unexpected error during setup. Check the Home Assistant logs."
     },
     "abort": {
